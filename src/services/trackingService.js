@@ -1,12 +1,11 @@
 /**
- * Tracking Service
- * Handles package tracking queries
- * Note: This is a mock implementation. In production, integrate with actual tracking APIs.
+ * Tracking Service - Integrated with Real API
+ * Handles package tracking queries using the MySave tracking API
  */
 class TrackingService {
     constructor() {
-        this.apiEnabled = process.env.TRACKING_API_ENABLED === 'true';
-        this.apiEndpoint = process.env.TRACKING_API_ENDPOINT || 'https://api.mysave.cc/tracking';
+        this.apiEndpoint = process.env.TRACKING_API_ENDPOINT || 'https://api-bi.my-group.net/v1/callback-gateway/express/trackings';
+        this.useRealAPI = process.env.USE_REAL_TRACKING_API !== 'false'; // Default to true
     }
 
     /**
@@ -17,91 +16,174 @@ class TrackingService {
     async getTrackingInfo(trackingNumber) {
         console.log(`[Tracking Service] Looking up: ${trackingNumber}`);
 
-        // In TEST_MODE or when API is not available, return mock data
-        if (!this.apiEnabled) {
+        if (!this.useRealAPI) {
+            console.log('[Tracking Service] Using mock data (USE_REAL_TRACKING_API=false)');
             return this.getMockTrackingInfo(trackingNumber);
         }
 
         try {
-            // In production, call actual tracking API
-            // const response = await fetch(`${this.apiEndpoint}/${trackingNumber}`);
-            // const data = await response.json();
-            // return data;
+            // Call real tracking API
+            const url = `${this.apiEndpoint}?courier_tracking_numbers=${trackingNumber}`;
+            console.log(`[Tracking Service] Calling API: ${url}`);
 
-            // For now, return mock data
-            return this.getMockTrackingInfo(trackingNumber);
+            const response = await fetch(url);
+
+            if (!response.ok) {
+                throw new Error(`API returned ${response.status}: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+
+            // API returns an array, get first result
+            if (!data || data.length === 0) {
+                return {
+                    found: false,
+                    trackingNumber: trackingNumber,
+                    error: 'Tracking number not found'
+                };
+            }
+
+            const trackingData = data[0];
+            return this.parseAPIResponse(trackingData);
+
         } catch (error) {
-            console.error('[Tracking Service] Error:', error.message);
+            console.error('[Tracking Service] Error calling API:', error.message);
+
+            // Return error response
             return {
                 found: false,
                 trackingNumber: trackingNumber,
-                error: 'Unable to retrieve tracking information'
+                error: `Unable to retrieve tracking information: ${error.message}`
             };
         }
     }
 
     /**
-     * Generate mock tracking information
-     * @param {string} trackingNumber - Tracking number
-     * @returns {Object} Mock tracking data
+     * Parse API response into standardized format
+     * @param {Object} apiData - Raw API response
+     * @returns {Object} Parsed tracking info
      */
-    getMockTrackingInfo(trackingNumber) {
-        const statuses = [
-            {
-                status: 'in_transit',
-                statusTH: 'กำลังจัดส่ง',
-                statusEN: 'In Transit',
-                location: 'Bangkok Distribution Center',
-                locationTH: 'ศูนย์กระจายสินค้า กรุงเทพฯ',
-                estimatedDelivery: '2025-11-27',
-                courier: 'Flash Express'
-            },
-            {
-                status: 'out_for_delivery',
-                statusTH: 'พัสดุออกจากศูนย์/กำลังนำจ่าย',
-                statusEN: 'Out for Delivery',
-                location: 'Your Area',
-                locationTH: 'พื้นที่ของคุณ',
-                estimatedDelivery: 'Today',
-                courier: 'Flash Express'
-            },
-            {
-                status: 'delivered',
-                statusTH: 'จัดส่งสำเร็จ',
-                statusEN: 'Delivered',
-                location: 'Delivered to recipient',
-                locationTH: 'ส่งถึงผู้รับแล้ว',
-                estimatedDelivery: '2025-11-26',
-                courier: 'Flash Express'
-            }
-        ];
+    parseAPIResponse(apiData) {
+        const {
+            courier,
+            courier_tracking_number,
+            service_tracking_number,
+            shipment_status,
+            shipment_status_updated_at,
+            shipment_events
+        } = apiData;
 
-        // Random status based on tracking number
-        const index = trackingNumber.length % statuses.length;
-        const trackingInfo = statuses[index];
+        // Get latest event (first in array)
+        const latestEvent = shipment_events && shipment_events.length > 0
+            ? shipment_events[0]
+            : null;
+
+        if (!latestEvent) {
+            return {
+                found: false,
+                trackingNumber: courier_tracking_number,
+                error: 'No tracking events found'
+            };
+        }
+
+        // Map status to user-friendly info
+        const statusInfo = this.getStatusInfo(shipment_status);
 
         return {
             found: true,
-            trackingNumber: trackingNumber,
-            ...trackingInfo,
-            history: [
-                {
-                    timestamp: '2025-11-26 10:30',
-                    status: 'Package picked up',
-                    statusTH: 'รับพัสดุแล้ว'
-                },
-                {
-                    timestamp: '2025-11-26 14:15',
-                    status: 'Arrived at sorting center',
-                    statusTH: 'ถึงศูนย์คัดแยก'
-                },
-                {
-                    timestamp: '2025-11-26 18:00',
-                    status: trackingInfo.statusEN,
-                    statusTH: trackingInfo.statusTH
-                }
-            ]
+            trackingNumber: courier_tracking_number,
+            serviceTrackingNumber: service_tracking_number,
+            courier: this.getCourierDisplayName(courier),
+            courierCode: courier,
+
+            // Current status
+            status: shipment_status,
+            statusTH: latestEvent.shipment_status_desc,
+            statusEN: statusInfo.statusEN,
+            statusEmoji: statusInfo.emoji,
+
+            // Latest location and time
+            location: latestEvent.location || 'กำลังอัพเดท',
+            locationTH: latestEvent.location || 'กำลังอัพเดท',
+            remark: latestEvent.remark,
+            timestamp: latestEvent.timestamp,
+            updatedAt: shipment_status_updated_at,
+
+            // Full history
+            history: shipment_events.slice(0, 5).map(event => ({
+                timestamp: event.timestamp,
+                statusTH: event.shipment_status_desc,
+                location: event.location,
+                remark: event.remark
+            })),
+
+            // Recipient info (if delivered)
+            recipient: apiData.recipient,
+
+            // Raw data for debugging
+            rawStatus: shipment_status
         };
+    }
+
+    /**
+     * Get status information with emoji and English translation
+     */
+    getStatusInfo(status) {
+        const statusMap = {
+            'BOOKED': {
+                emoji: '📋',
+                statusEN: 'Order Placed',
+                color: 'blue'
+            },
+            'PICKED': {
+                emoji: '📦',
+                statusEN: 'Picked Up',
+                color: 'blue'
+            },
+            'TRANSIT': {
+                emoji: '🚚',
+                statusEN: 'In Transit',
+                color: 'orange'
+            },
+            'DELIVERED': {
+                emoji: '✅',
+                statusEN: 'Delivered',
+                color: 'green'
+            },
+            'FAILED': {
+                emoji: '❌',
+                statusEN: 'Delivery Failed',
+                color: 'red'
+            },
+            'RETURNED': {
+                emoji: '↩️',
+                statusEN: 'Returned',
+                color: 'red'
+            }
+        };
+
+        return statusMap[status] || {
+            emoji: '📍',
+            statusEN: status,
+            color: 'gray'
+        };
+    }
+
+    /**
+     * Get display name for courier
+     */
+    getCourierDisplayName(courierCode) {
+        const courierNames = {
+            'FLASH': 'Flash Express',
+            'SHOPEE': 'Shopee Express (SPX)',
+            'JT': 'J&T Express',
+            'KERRY': 'Kerry Express',
+            'THAIPOST': 'Thailand Post',
+            'DHL': 'DHL',
+            'NINJAVAN': 'Ninja Van'
+        };
+
+        return courierNames[courierCode] || courierCode;
     }
 
     /**
@@ -111,7 +193,11 @@ class TrackingService {
      */
     formatTrackingMessage(trackingInfo) {
         if (!trackingInfo.found) {
-            return `ขออภัยค่ะ ไม่พบข้อมูลพัสดุหมายเลข ${trackingInfo.trackingNumber}
+            return `❌ ไม่พบข้อมูลพัสดุ
+
+🔢 เลขพัสดุ: ${trackingInfo.trackingNumber}
+
+${trackingInfo.error || 'ไม่พบข้อมูลในระบบ'}
 
 กรุณาตรวจสอบ:
 • เลขพัสดุถูกต้องหรือไม่
@@ -119,42 +205,102 @@ class TrackingService {
 
 📞 สอบถามเพิ่มเติม:
 • โทร: 02-0966494
-• LINE: @mysave`;
-        }
-
-        const statusEmoji = {
-            'in_transit': '🚚',
-            'out_for_delivery': '📦',
-            'delivered': '✅'
-        };
-
-        const emoji = statusEmoji[trackingInfo.status] || '📍';
-
-        return `${emoji} สถานะพัสดุ
-
-🔢 เลขพัสดุ: ${trackingInfo.trackingNumber}
-📦 ขนส่งโดย: ${trackingInfo.courier}
-
-📍 สถานะปัจจุบัน:
-${trackingInfo.statusTH}
-${trackingInfo.locationTH}
-
-📅 ${trackingInfo.status === 'delivered' ? 'จัดส่งเมื่อ' : 'กำหนดส่ง'}: ${trackingInfo.estimatedDelivery}
+• LINE OA: @mysave
 
 ---
 
-${emoji} Package Status
+❌ Tracking Not Found
 
 🔢 Tracking: ${trackingInfo.trackingNumber}
-📦 Courier: ${trackingInfo.courier}
 
-📍 Current Status:
-${trackingInfo.statusEN}
-${trackingInfo.location}
+${trackingInfo.error || 'No information found'}
 
-📅 ${trackingInfo.status === 'delivered' ? 'Delivered' : 'Estimated'}: ${trackingInfo.estimatedDelivery}
+Please check:
+• Tracking number is correct
+• Package may not be scanned yet (wait 2-4 hours)
 
 📞 Contact: 02-0966494 | LINE: @mysave`;
+        }
+
+        const emoji = trackingInfo.statusEmoji || '📦';
+        const timestamp = this.formatTimestamp(trackingInfo.timestamp);
+
+        let message = `${emoji} สถานะพัสดุ / Package Status
+
+🔢 เลขพัสดุ / Tracking: ${trackingInfo.trackingNumber}
+📦 ขนส่ง / Courier: ${trackingInfo.courier}
+
+📍 สถานะปัจจุบัน / Current Status:
+${trackingInfo.statusTH}
+${trackingInfo.statusEN}
+
+📍 ตำแหน่ง / Location:
+${trackingInfo.locationTH}
+
+⏰ อัพเดทล่าสุด / Last Update:
+${timestamp}`;
+
+        // Add remark if available
+        if (trackingInfo.remark) {
+            message += `\n\n💬 รายละเอียด:\n${trackingInfo.remark}`;
+        }
+
+        // Add delivery signature for delivered packages
+        if (trackingInfo.status === 'DELIVERED' && trackingInfo.recipient?.signature) {
+            message += `\n\n✅ มีหลักฐานการเซ็นรับ`;
+        }
+
+        // Add recent history
+        if (trackingInfo.history && trackingInfo.history.length > 1) {
+            message += `\n\n📋 ประวัติล่าสุด / Recent History:`;
+            trackingInfo.history.slice(0, 3).forEach((event, index) => {
+                const eventTime = this.formatTimestampShort(event.timestamp);
+                message += `\n${index + 1}. ${eventTime} - ${event.statusTH}`;
+                if (event.location) {
+                    message += `\n   ${event.location}`;
+                }
+            });
+        }
+
+        message += `\n\n📞 ติดต่อ / Contact: 02-0966494 | LINE: @mysave`;
+
+        return message;
+    }
+
+    /**
+     * Format timestamp to Thai readable format
+     */
+    formatTimestamp(timestamp) {
+        if (!timestamp) return 'ไม่ระบุ';
+
+        const date = new Date(timestamp);
+        const thaiMonths = [
+            'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
+            'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'
+        ];
+
+        const day = date.getDate();
+        const month = thaiMonths[date.getMonth()];
+        const year = date.getFullYear() + 543; // Thai Buddhist year
+        const hours = date.getHours().toString().padStart(2, '0');
+        const minutes = date.getMinutes().toString().padStart(2, '0');
+
+        return `${day} ${month} ${year} เวลา ${hours}:${minutes} น.`;
+    }
+
+    /**
+     * Format timestamp (short version)
+     */
+    formatTimestampShort(timestamp) {
+        if (!timestamp) return '';
+
+        const date = new Date(timestamp);
+        const day = date.getDate();
+        const month = date.getMonth() + 1;
+        const hours = date.getHours().toString().padStart(2, '0');
+        const minutes = date.getMinutes().toString().padStart(2, '0');
+
+        return `${day}/${month} ${hours}:${minutes}`;
     }
 
     /**
@@ -167,9 +313,50 @@ ${trackingInfo.location}
             return false;
         }
 
-        // Accept alphanumeric tracking numbers
-        const pattern = /^[A-Z0-9]{8,20}$/i;
+        // Accept various tracking number formats
+        // Examples: TH04027XD7PE2F, SPXTH051981188579, 7227115611892065
+        const pattern = /^[A-Z0-9]{8,30}$/i;
         return pattern.test(trackingNumber);
+    }
+
+    /**
+     * Generate mock tracking information (for testing)
+     * @param {string} trackingNumber - Tracking number
+     * @returns {Object} Mock tracking data
+     */
+    getMockTrackingInfo(trackingNumber) {
+        const statuses = [
+            {
+                status: 'TRANSIT',
+                statusTH: 'กำลังจัดส่ง',
+                statusEN: 'In Transit',
+                location: 'Bangkok Distribution Center',
+                locationTH: 'ศูนย์กระจายสินค้า กรุงเทพฯ',
+                courier: 'Flash Express',
+                emoji: '🚚'
+            },
+            {
+                status: 'DELIVERED',
+                statusTH: 'จัดส่งสำเร็จ',
+                statusEN: 'Delivered',
+                location: 'Delivered to recipient',
+                locationTH: 'ส่งถึงผู้รับแล้ว',
+                courier: 'Flash Express',
+                emoji: '✅'
+            }
+        ];
+
+        const index = trackingNumber.length % statuses.length;
+        const mockStatus = statuses[index];
+
+        return {
+            found: true,
+            trackingNumber: trackingNumber,
+            ...mockStatus,
+            timestamp: new Date().toISOString(),
+            remark: 'This is mock data for testing',
+            history: []
+        };
     }
 }
 
