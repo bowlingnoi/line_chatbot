@@ -1,0 +1,32 @@
+{
+    "name": "line-mcp-faq-bot",
+    "version": "1.0.0",
+    "description": "LINE MCP Server proof of concept for reducing CS cases with FAQ automation",
+    "main": "src/server.js",
+    "type": "module",
+    "scripts": {
+        "start": "node src/server.js",
+        "dev": "node --watch src/server.js",
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "keywords": [
+        "line",
+        "mcp",
+        "chatbot",
+        "customer-service",
+        "faq",
+        "ai"
+    ],
+    "author": "Shippop",
+    "license": "MIT",
+    "dependencies": {
+        "@line/bot-sdk": "^9.3.0",
+        "dotenv": "^16.4.5",
+        "express": "^4.19.2",
+        "openai": "^4.68.4",
+        "winston": "^3.15.0"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}
