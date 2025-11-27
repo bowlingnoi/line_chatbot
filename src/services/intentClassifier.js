@@ -60,16 +60,33 @@ class IntentClassifier {
         );
 
         // Extract potential tracking number
-        // Common formats: TH1234567890, ABC123456789, etc.
-        const trackingNumberPattern = /\b[A-Z]{2,3}[0-9]{8,15}\b/i;
-        const trackingMatch = originalMessage.match(trackingNumberPattern);
+        // Supports various formats:
+        // - TH014781D6JD0B (letters + numbers mixed)
+        // - 7228112769731265 (pure numbers)
+        // - SHIPBA4361694 (prefix + numbers)
+        // - WB047589355TH (numbers + suffix)
+        // - JA189166117TH (prefix + numbers + suffix)
 
-        if (trackingMatch) {
-            return {
-                isTracking: true,
-                confidence: 0.95,
-                trackingNumber: trackingMatch[0]
-            };
+        // Try to find alphanumeric sequence of 10-20 characters
+        const trackingNumberPattern = /\b[A-Z0-9]{10,20}\b/i;
+        const matches = originalMessage.match(new RegExp(trackingNumberPattern, 'gi'));
+
+        if (matches && matches.length > 0) {
+            // Get the longest match (most likely to be tracking number)
+            const trackingNumber = matches.reduce((longest, current) =>
+                current.length > longest.length ? current : longest
+            );
+
+            // Validate it looks like a tracking number (has at least 3 consecutive digits or letters)
+            const hasMinConsecutive = /\d{3,}|[A-Z]{3,}/i.test(trackingNumber);
+
+            if (hasMinConsecutive) {
+                return {
+                    isTracking: true,
+                    confidence: 0.95,
+                    trackingNumber: trackingNumber.toUpperCase()
+                };
+            }
         }
 
         if (hasKeyword) {
